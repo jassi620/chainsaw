@@ -88,5 +88,138 @@ runs:
     - name: Publish Chainsaw report (table)
       shell: bash
       run: |
-        set -e
-        cat /tmp/chainsaw-report.json
+        set -euo pipefail
+
+        REPORT_PATH="/tmp/chainsaw-report.json"
+        
+        python3 - "$REPORT_PATH" << 'PYEOF'
+        import sys
+        import json
+        from datetime import datetime, timezone
+
+        report_path = sys.argv[1]
+
+        with open(report_path) as f:
+            report = json.load(f)
+
+        # Normalise: support both top-level list and {"tests": [...]} shapes
+        if isinstance(report, list):
+            tests = report
+        elif isinstance(report, dict) and "tests" in report:
+            tests = report["tests"]
+        else:
+            tests = [report]
+
+        COL_TEST  = 32
+        COL_STEP  = 30
+        COL_STAT  =  8
+        COL_DUR   =  9
+
+        PASS_ICON = "✅ PASS"
+        FAIL_ICON = "❌ FAIL"
+        SKIP_ICON = "⏭  SKIP"
+
+        def parse_ts(ts):
+            """Parse ISO 8601 timestamp to datetime, tolerating offset or Z suffixes."""
+            if not ts:
+                return None
+            # Python < 3.11 doesn't handle colon in tz offset well; normalise
+            ts = ts.replace("Z", "+00:00")
+            # Handle offset like +01:00
+            try:
+                return datetime.fromisoformat(ts)
+            except ValueError:
+                return None
+
+        def elapsed(start_ts, end_ts):
+            """Return duration in seconds between two ISO timestamps, or None."""
+            s, e = parse_ts(start_ts), parse_ts(end_ts)
+            if s and e:
+                return (e - s).total_seconds()
+            return None
+
+        def fmt_dur(secs):
+            if secs is None:
+                return "-"
+            if secs < 60:
+                return f"{secs:.2f}s"
+            m, s = divmod(secs, 60)
+            return f"{int(m)}m{s:.0f}s"
+
+        def status_icon(s):
+            s = (s or "").lower()
+            if s in ("pass", "passed", "true", "succeeded", "success"):
+                return PASS_ICON
+            if s in ("skip", "skipped"):
+                return SKIP_ICON
+            return FAIL_ICON
+
+        def fmt(s, width):
+            s = str(s or "")
+            return s[:width].ljust(width)
+
+        sep_head = "├" + "─"*(COL_TEST+2) + "┼" + "─"*(COL_STEP+2) + "┼" + "─"*(COL_STAT+2) + "┼" + "─"*(COL_DUR+2) + "┤"
+        sep_bot  = "└" + "─"*(COL_TEST+2) + "┴" + "─"*(COL_STEP+2) + "┴" + "─"*(COL_STAT+2) + "┴" + "─"*(COL_DUR+2) + "┘"
+
+        def row(test, step, status, dur):
+            return ("│ " + fmt(test, COL_TEST) + " │ " + fmt(step, COL_STEP) +
+                    " │ " + fmt(status, COL_STAT) + " │ " + fmt(dur, COL_DUR) + " │")
+
+        header_title = f"  ECP Chainsaw Test Report"
+        total_width = COL_TEST + COL_STEP + COL_STAT + COL_DUR + 11
+        header_line = "│" + header_title.ljust(total_width) + "│"
+        header_border = "├" + "─"*total_width + "┤"
+
+        # Compute overall run duration from report-level timestamps
+        report_start = report.get("startTime") if isinstance(report, dict) else None
+        report_end   = report.get("endTime")   if isinstance(report, dict) else None
+        run_duration = elapsed(report_start, report_end)
+
+        print()
+        print("┌" + "─"*total_width + "┐")
+        print(header_line)
+        print(header_border)
+        print(sep_head)
+        print(row("Test", "Step", "Status", "Duration"))
+        print(sep_head)
+
+        passed = failed = skipped = 0
+        step_duration_sum = 0.0
+
+        for test in tests:
+            test_name = test.get("name") or test.get("test") or "unknown"
+            steps = test.get("steps") or []
+            if not steps:
+                status = test.get("status") or test.get("result") or "unknown"
+                icon = status_icon(status)
+                secs = elapsed(test.get("startTime"), test.get("endTime"))
+                if secs: step_duration_sum += secs
+                print(row(test_name, "(no steps)", icon, fmt_dur(secs)))
+                if "PASS" in icon: passed += 1
+                elif "SKIP" in icon: skipped += 1
+                else: failed += 1
+            else:
+                for i, step in enumerate(steps):
+                    step_name = step.get("name") or f"step-{i+1}"
+                    status    = step.get("status") or step.get("result") or "unknown"
+                    icon      = status_icon(status)
+                    secs      = elapsed(step.get("startTime"), step.get("endTime"))
+                    if secs: step_duration_sum += secs
+                    display_test = test_name if i == 0 else ""
+                    print(row(display_test, step_name, icon, fmt_dur(secs)))
+                    if "PASS" in icon: passed += 1
+                    elif "SKIP" in icon: skipped += 1
+                    else: failed += 1
+
+        print(sep_bot)
+        print()
+        total = passed + failed + skipped
+        # Prefer report-level wall-clock duration; fall back to sum of step durations
+        dur_str = fmt_dur(run_duration if run_duration is not None else (step_duration_sum or None))
+        summary = f"  Summary: {passed} passed, {failed} failed, {skipped} skipped — Total: {total}  Duration: {dur_str}"
+        print(("❌" if failed > 0 else "✅") + summary)
+        print()
+
+        sys.exit(1 if failed > 0 else 0)
+        PYEOF
+                
