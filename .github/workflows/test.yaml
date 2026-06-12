@@ -6,10 +6,10 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - test
+      - main
   pull_request:
     branches:
-      - main
+      - test
       - release-*
 
 concurrency:
