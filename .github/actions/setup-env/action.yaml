@@ -75,7 +75,7 @@ runs:
       shell: bash
       run: |
         set -e
-        kind create cluster --image kindest/node:${{ inputs.k8s-version }} --config ./.github/kind.yml
+        kind create cluster --image kindest/node:${{ inputs.k8s-version }} --config ./.github/kind.yaml
     # - name: Install latest kyverno
     #   shell: bash
     #   run: |
