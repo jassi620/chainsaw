@@ -1,0 +1,81 @@
+inputs:
+  path:
+    description: Tests path
+    default: '.'
+  tests:
+    description: "Test regex"
+    default: ''
+  shard-index:
+    description: Shard index
+    default: '0'
+  shard-count:
+    description: Shard count
+    default: '0'
+  chainsaw-version:
+    description: Chainsaw release tag to install
+    default: 'v0.2.14'
+runs:
+  using: "composite"
+  steps:
+    - name: Install Cosign
+      uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
+
+    - name: Install Chainsaw (binary)
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        VERSION="${{ inputs.chainsaw-version }}"
+        OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        ARCH="$(uname -m)"
+
+        case "${ARCH}" in
+          x86_64) ARCH="amd64" ;;
+          aarch64|arm64) ARCH="arm64" ;;
+          *)
+            echo "Unsupported architecture: ${ARCH}"
+            exit 1
+            ;;
+        esac
+        export VERSION OS ARCH
+
+        ASSET_URL="$(python3 - <<'PY'
+        import json, os, re, urllib.request
+
+        version = os.environ["VERSION"]
+        os_name = os.environ["OS"]
+        arch = os.environ["ARCH"]
+        api = f"https://api.github.com/repos/kyverno/chainsaw/releases/tags/{version}"
+
+        with urllib.request.urlopen(api) as r:
+            data = json.load(r)
+
+        pattern = re.compile(rf"chainsaw.*{os_name}.*{arch}.*\.tar\.gz$")
+        for a in data.get("assets", []):
+            name = a.get("name", "")
+            if pattern.search(name):
+                print(a["browser_download_url"])
+                break
+        else:
+            raise SystemExit(
+                f"No matching chainsaw asset found for {os_name}/{arch} in {version}"
+            )
+        PY
+        )"
+
+        curl -fsSL -o /tmp/chainsaw.tar.gz "${ASSET_URL}"
+        tar -xzf /tmp/chainsaw.tar.gz -C /tmp
+        install -m 0755 /tmp/chainsaw "${RUNNER_TEMP}/chainsaw"
+        echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+        "${RUNNER_TEMP}/chainsaw" version
+
+    - name: Test with Chainsaw
+      shell: bash
+      run: |
+        set -e
+        chainsaw test ${{ inputs.path }} \
+          --config .chainsaw.yaml \
+          --include-test-regex '^chainsaw$/${{ inputs.tests }}' \
+          --shard-index ${{ inputs.shard-index }} \
+          --shard-count ${{ inputs.shard-count }} \
+          --no-color=false
