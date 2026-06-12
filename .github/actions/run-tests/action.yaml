@@ -1,3 +1,5 @@
+name: "Run E2E Tests"
+description: "Execute E2E"
 inputs:
   path:
     description: Tests path
@@ -78,4 +80,80 @@ runs:
           --include-test-regex '^chainsaw$/${{ inputs.tests }}' \
           --shard-index ${{ inputs.shard-index }} \
           --shard-count ${{ inputs.shard-count }} \
-          --no-color=false
+          --no-color=false \
+          --report-format JSON \
+          --report-name chainsaw-report \
+          --report-path /tmp/chainsaw
+
+    - name: Publish Chainsaw report (table)
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        REPORT_DIR="/tmp/chainsaw"
+        REPORT_FILE="$(find "${REPORT_DIR}" -maxdepth 1 -type f \( -name 'chainsaw-report*.json' -o -name 'chainsaw-report' \) | head -n 1 || true)"
+
+        if [[ -z "${REPORT_FILE}" ]]; then
+          {
+            echo "### Chainsaw Test Report"
+            echo ""
+            echo "_Report file not found in \`${REPORT_DIR}\`._"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit 0
+        fi
+
+        python3 - "${REPORT_FILE}" >> "${GITHUB_STEP_SUMMARY}" <<'PY'
+        import json
+        import sys
+        from pathlib import Path
+
+        report_file = Path(sys.argv[1])
+        data = json.loads(report_file.read_text())
+
+        def pick(d, *keys, default=""):
+            if not isinstance(d, dict):
+                return default
+            for k in keys:
+                if k in d and d[k] is not None:
+                    return d[k]
+            return default
+
+        def esc(v):
+            s = str(v) if v is not None else ""
+            return s.replace("|", r"\|").replace("\n", " ")
+
+        summary = pick(data, "summary", default={})
+        if not isinstance(summary, dict):
+            summary = {}
+
+        total = pick(summary, "total", "tests", "count", default="")
+        passed = pick(summary, "passed", "success", default="")
+        failed = pick(summary, "failed", "failures", default="")
+        skipped = pick(summary, "skipped", default="")
+        duration = pick(summary, "duration", "elapsed", default="")
+
+        tests = pick(data, "tests", "results", "items", default=[])
+        if not isinstance(tests, list):
+            tests = []
+
+        print("### Chainsaw Test Report")
+        print("")
+        print("| Report File | Total | Passed | Failed | Skipped | Duration |")
+        print("|---|---:|---:|---:|---:|---:|")
+        print(f"| `{esc(report_file)}` | {esc(total)} | {esc(passed)} | {esc(failed)} | {esc(skipped)} | {esc(duration)} |")
+
+        if tests:
+            print("")
+            print("| Test | Status | Duration | Message |")
+            print("|---|---|---:|---|")
+            for t in tests:
+                if not isinstance(t, dict):
+                    continue
+                name = pick(t, "name", "test", "id", default="-")
+                status = pick(t, "status", "result", default="-")
+                td = pick(t, "duration", "elapsed", default="-")
+                msg = pick(t, "message", "error", default="")
+                print(f"| {esc(name)} | {esc(status)} | {esc(td)} | {esc(msg)} |")
+        PY
+
