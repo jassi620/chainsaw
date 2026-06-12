@@ -76,13 +76,15 @@ runs:
       run: |
         set -e
         kind create cluster --image kindest/node:${{ inputs.k8s-version }} --config ./.github/kind.yaml
-    # - name: Install latest kyverno
-    #   shell: bash
-    #   run: |
-    #     set -e
-    #     kubectl create -f https://github.com/kyverno/kyverno/raw/main/config/install-latest-testing.yaml
-    # - name: Wait for kyverno ready
-    #   shell: bash
-    #   run: |
-    #     set -e
-    #     kubectl wait --namespace kyverno --for=condition=ready pod --selector '!job-name' --timeout=120s
+        
+    - name: Install latest kyverno
+      shell: bash
+      run: |
+        set -e
+        kubectl create -f https://github.com/kyverno/kyverno/raw/main/config/install-latest-testing.yaml
+        
+    - name: Wait for kyverno ready
+      shell: bash
+      run: |
+        set -e
+        kubectl wait --namespace kyverno --for=condition=ready pod --selector '!job-name' --timeout=120s
